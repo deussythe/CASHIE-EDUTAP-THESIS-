@@ -1,4 +1,6 @@
 import { createContext } from "react";
+import { auth } from "../../configs/firebase";
+
 
 export interface User {
 	id: string;
@@ -104,5 +106,6 @@ export interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
 
 export default AuthContext;
