@@ -1,8 +1,10 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { CreditCard, Banknote, CheckCircle2, X } from "lucide-react"
-import { auth } from "../../../configs/firebase"
+import { collection, query, where, getDocs } from "firebase/firestore"
+import { db } from "../../../configs/firebase"
+import { processRFIDPayment } from "../../../configs/transactionService"
 
 interface CartItem {
     id: string
@@ -20,54 +22,49 @@ interface CheckoutDialogProps {
     total: number
     items: CartItem[]
     onAddTransaction: (transaction: any) => void
+    studentId?: string
 }
 
-
-export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddTransaction }: CheckoutDialogProps) {
+export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddTransaction, studentId }: CheckoutDialogProps) {
     const [paymentMethod, setPaymentMethod] = useState<"card" | "cash">("card")
     const [cashReceived, setCashReceived] = useState("")
     const [processing, setProcessing] = useState(false)
     const [success, setSuccess] = useState(false)
     const [waitingForCard, setWaitingForCard] = useState(false)
-    
+    const [cardError, setCardError] = useState("")
+    const rfidInputRef = useRef<HTMLInputElement>(null)
 
-    const getCashAmount = () => {
-        return Number.parseFloat(cashReceived || "0")
-    }
-
+    const getCashAmount = () => Number.parseFloat(cashReceived || "0")
     const calculateChange = () => {
         if (paymentMethod !== "cash") return 0
-        const cash = getCashAmount()
-        return Math.max(0, cash - total)
+        return Math.max(0, getCashAmount() - total)
     }
-
-    const isSufficientCash = () => {
-        return getCashAmount() >= total
-    }
-
+    const isSufficientCash = () => getCashAmount() >= total
     const change = calculateChange()
+
+    // Auto-focus RFID input when waiting for card
+    useEffect(() => {
+        if (waitingForCard) {
+            setTimeout(() => rfidInputRef.current?.focus(), 100)
+        }
+    }, [waitingForCard])
 
     const handleComplete = async () => {
         if (paymentMethod === "card") {
-            // Show RFID tap modal for card payments
             setWaitingForCard(true)
+            setCardError("")
             return
         }
 
-        // For cash payments, process immediately
         setProcessing(true)
-
-        // Simulate payment processing
         await new Promise((resolve) => setTimeout(resolve, 1500))
 
-        // Add transaction to history
-        // In handleComplete (cash payment):
         onAddTransaction({
             items: items.map((item) => ({
                 id: item.id,
                 name: item.name,
-                quantity: item.quantity,
                 price: item.price,
+                quantity: item.quantity,
                 category: item.category,
                 image: item.image,
             })),
@@ -75,16 +72,15 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
             tax: parseFloat((total - total / 1.08).toFixed(2)),
             total,
             paymentMethod: "cash",
-            amountPaid: getCashAmount(),   // ✅ renamed from cashReceived
-            change: change,
-            staffName: "",   // filled in by page.tsx handleAddTransaction
-            staffId: "",     // filled in by page.tsx handleAddTransaction
+            amountPaid: getCashAmount(),
+            change,
+            staffName: "",
+            staffId: "",
+            studentId: studentId || "",
             timestamp: Date.now(),
         })
 
         setSuccess(true)
-
-        // Reset and close after showing success
         setTimeout(() => {
             setProcessing(false)
             setSuccess(false)
@@ -94,44 +90,80 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
         }, 2000)
     }
 
-    const handleCardTap = async () => {
-        setWaitingForCard(false)
+    // Handle RFID scan inside the dialog
+    const handleRFIDKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key !== "Enter") return
+        const rfidSerial = e.currentTarget.value
+        if (!rfidSerial) return
+
+        const input = e.currentTarget
         setProcessing(true)
+        setCardError("")
 
-        // Simulate card processing
-        await new Promise((resolve) => setTimeout(resolve, 1500))
+        try {
+            // 1. Look up student by rfidSerial
+            const studentSnap = await getDocs(
+                query(collection(db, "students"), where("rfidSerial", "==", rfidSerial))
+            )
 
-        // In handleCardTap (card payment):
-        onAddTransaction({
-            items: items.map((item) => ({
-                id: item.id,
-                name: item.name,
-                quantity: item.quantity,
-                price: item.price,
-                category: item.category,
-                image: item.image,
-            })),
-            subtotal: parseFloat((total / 1.08).toFixed(2)),
-            tax: parseFloat((total - total / 1.08).toFixed(2)),
-            total,
-            paymentMethod: "card",
-            amountPaid: total,    // ✅ card pays exact amount
-            change: 0,
-            staffName: "",
-            staffId: "",
-            timestamp: Date.now(),
-        })
+            if (studentSnap.empty) {
+                setCardError("Student not found!")
+                setProcessing(false)
+                input.value = ""
+                return
+            }
 
-        setSuccess(true)
+            const studentDoc = studentSnap.docs[0]
+            const foundStudentId = studentDoc.id
 
-        // Reset and close after showing success
-        setTimeout(() => {
+            // 2. Process RFID payment (deduct balance)
+            const result = await processRFIDPayment(foundStudentId, total)
+
+            if (!result.success) {
+                setCardError(result.message || "Payment failed.")
+                setProcessing(false)
+                input.value = ""
+                return
+            }
+
+            // 3. Save transaction with real studentId
+            onAddTransaction({
+                items: items.map((item) => ({
+                    id: item.id,
+                    name: item.name,
+                    price: item.price,
+                    quantity: item.quantity,
+                    category: item.category,
+                    image: item.image,
+                })),
+                subtotal: parseFloat((total / 1.08).toFixed(2)),
+                tax: parseFloat((total - total / 1.08).toFixed(2)),
+                total,
+                paymentMethod: "card",
+                amountPaid: total,
+                change: 0,
+                staffName: "",
+                staffId: "",
+                studentId: foundStudentId,
+                timestamp: Date.now(),
+            })
+
+            setWaitingForCard(false)
+            setSuccess(true)
+            setTimeout(() => {
+                setProcessing(false)
+                setSuccess(false)
+                setCashReceived("")
+                setPaymentMethod("card")
+                onComplete()
+            }, 2000)
+
+        } catch (err) {
+            setCardError("Something went wrong. Try again.")
             setProcessing(false)
-            setSuccess(false)
-            setCashReceived("")
-            setPaymentMethod("card")
-            onComplete()
-        }, 2000)
+        }
+
+        input.value = ""
     }
 
     const handleClose = () => {
@@ -141,18 +173,6 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
             onClose()
         }
     }
-
-    // Add event listener for key press (RFID tap simulation)
-    useEffect(() => {
-        if (waitingForCard) {
-            const handleKeyPress = (e: KeyboardEvent) => {
-                e.preventDefault()
-                handleCardTap()
-            }
-            window.addEventListener("keydown", handleKeyPress)
-            return () => window.removeEventListener("keydown", handleKeyPress)
-        }
-    }, [waitingForCard])
 
     if (!open) return null
 
@@ -180,11 +200,23 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
 
                 {waitingForCard ? (
                     <div className="flex flex-col items-center justify-center py-8">
+                        {/* Hidden RFID input */}
+                        <input
+                            ref={rfidInputRef}
+                            onKeyDown={handleRFIDKeyDown}
+                            className="absolute opacity-0 pointer-events-none"
+                            autoFocus
+                        />
                         <div className="mb-6 flex h-24 w-24 items-center justify-center rounded-full bg-blue-100 animate-pulse">
                             <CreditCard className="h-12 w-12 text-blue-600" />
                         </div>
-                        <h3 className="mb-2 text-xl font-semibold">Waiting for Card</h3>
+                        <h3 className="mb-2 text-xl font-semibold">
+                            {processing ? "Processing..." : "Waiting for Card"}
+                        </h3>
                         <p className="text-center text-gray-500 mb-4">Tap your RFID card to complete payment</p>
+                        {cardError && (
+                            <p className="text-sm text-red-600 mb-4">{cardError}</p>
+                        )}
                         <div className="rounded-lg border bg-gray-50 p-4 w-full">
                             <div className="flex justify-between">
                                 <span className="text-lg font-medium">Amount to Pay</span>
@@ -212,20 +244,14 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
                             <label className="mb-3 block text-sm font-medium">Payment Method</label>
                             <div className="grid grid-cols-2 gap-3">
                                 <button
-                                    className={`flex h-20 flex-col items-center justify-center gap-2 rounded-lg border-2 transition-colors ${paymentMethod === "card"
-                                            ? "border-black bg-black text-white"
-                                            : "border-gray-300 bg-white hover:bg-gray-50"
-                                        }`}
+                                    className={`flex h-20 flex-col items-center justify-center gap-2 rounded-lg border-2 transition-colors ${paymentMethod === "card" ? "border-black bg-black text-white" : "border-gray-300 bg-white hover:bg-gray-50"}`}
                                     onClick={() => setPaymentMethod("card")}
                                 >
                                     <CreditCard className="h-6 w-6" />
                                     <span>Card</span>
                                 </button>
                                 <button
-                                    className={`flex h-20 flex-col items-center justify-center gap-2 rounded-lg border-2 transition-colors ${paymentMethod === "cash"
-                                            ? "border-black bg-black text-white"
-                                            : "border-gray-300 bg-white hover:bg-gray-50"
-                                        }`}
+                                    className={`flex h-20 flex-col items-center justify-center gap-2 rounded-lg border-2 transition-colors ${paymentMethod === "cash" ? "border-black bg-black text-white" : "border-gray-300 bg-white hover:bg-gray-50"}`}
                                     onClick={() => setPaymentMethod("cash")}
                                 >
                                     <Banknote className="h-6 w-6" />
@@ -251,25 +277,16 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
                                     />
                                 </div>
                                 {cashReceived && (
-                                    <div
-                                        className={`rounded-lg border p-3 ${isSufficientCash()
-                                                ? "border-green-200 bg-green-50"
-                                                : "border-red-200 bg-red-50"
-                                            }`}
-                                    >
+                                    <div className={`rounded-lg border p-3 ${isSufficientCash() ? "border-green-200 bg-green-50" : "border-red-200 bg-red-50"}`}>
                                         {isSufficientCash() ? (
                                             <div className="flex justify-between">
                                                 <span className="font-semibold text-green-700">Change Due</span>
-                                                <span className="text-xl font-bold text-green-700">
-                                                    ₱{change.toFixed(2)}
-                                                </span>
+                                                <span className="text-xl font-bold text-green-700">₱{change.toFixed(2)}</span>
                                             </div>
                                         ) : (
                                             <div className="flex items-center justify-between">
                                                 <span className="text-sm text-red-700">Insufficient amount</span>
-                                                <span className="text-sm font-medium text-red-700">
-                                                    Need ₱{(total - getCashAmount()).toFixed(2)} more
-                                                </span>
+                                                <span className="text-sm font-medium text-red-700">Need ₱{(total - getCashAmount()).toFixed(2)} more</span>
                                             </div>
                                         )}
                                     </div>
@@ -285,10 +302,7 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
                         </div>
 
                         <button
-                            className={`w-full rounded-lg px-4 py-3 text-lg font-semibold text-white transition-colors ${processing || (paymentMethod === "cash" && !isSufficientCash())
-                                    ? "cursor-not-allowed bg-gray-400"
-                                    : "bg-black hover:bg-gray-800"
-                                }`}
+                            className={`w-full rounded-lg px-4 py-3 text-lg font-semibold text-white transition-colors ${processing || (paymentMethod === "cash" && !isSufficientCash()) ? "cursor-not-allowed bg-gray-400" : "bg-black hover:bg-gray-800"}`}
                             onClick={handleComplete}
                             disabled={processing || (paymentMethod === "cash" && !isSufficientCash())}
                         >

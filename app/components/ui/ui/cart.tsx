@@ -2,11 +2,14 @@
 
 import { Trash2, Plus, Minus, CreditCard } from "lucide-react"
 import { CheckoutDialog } from "./checkout-dialog"
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import { ScrollArea } from "./scroll-area"
 import { Card } from "./card"
 import { Button } from "./button"
 import { Separator } from "./separator"
+import { processRFIDPayment, saveTransaction } from "@/configs/transactionService"
+import { collection, query, where, getDocs } from "firebase/firestore"
+import { db } from "@/configs/firebase"
 
 interface CartItem {
     id: string
@@ -27,14 +30,70 @@ interface CartProps {
 
 export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAddTransaction }: CartProps) {
     const [showCheckout, setShowCheckout] = useState(false)
+    const rfidInputRef = useRef<HTMLInputElement>(null)
+    const [scannedStudentId, setScannedStudentId] = useState("")
 
     const subtotal = items.reduce((total, item) => total + item.price * item.quantity, 0)
     const tax = subtotal * 0.08
     const total = subtotal + tax
 
-    const handleCheckout = () => {
-        setShowCheckout(true)
+    useEffect(() => {
+        const keepFocus = () => rfidInputRef.current?.focus()
+        document.addEventListener("click", keepFocus)
+        return () => document.removeEventListener("click", keepFocus)
+    }, [])
+
+    const handleRFIDScan = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === "Enter" && items.length > 0) {
+            const rfidSerial = e.currentTarget.value
+
+            // Look up student by rfidSerial
+            const studentQuery = query(
+                collection(db, "students"),
+                where("rfidSerial", "==", rfidSerial)
+            )
+            const studentSnap = await getDocs(studentQuery)
+
+            if (studentSnap.empty) {
+                alert("Student not found!")
+                e.currentTarget.value = ""
+                return
+            }
+
+            const studentDoc = studentSnap.docs[0]
+            const studentId = studentDoc.id  // real Firestore document ID
+            setScannedStudentId(studentId)
+
+            // Process payment using studentId
+            const result = await processRFIDPayment(studentId, total)
+
+            if (result.success) {
+                const transactionData = {
+                    items,
+                    total,
+                    subtotal,
+                    tax,
+                    amountPaid: total,
+                    change: 0,
+                    staffName: "Canteen Staff",
+                    staffId: "Staff_001",
+                    studentId: studentId,
+                    paymentMethod: "RFID",
+                    timestamp: Date.now()
+                }
+
+                await saveTransaction(transactionData)
+                onAddTransaction(transactionData)
+                onClearCart()
+                alert(`Transaction Successful! New Balance: ₱${result.newBalance!.toFixed(2)}`)
+            } else {
+                alert(result.message)
+            }
+            e.currentTarget.value = ""
+        }
     }
+
+    const handleCheckout = () => setShowCheckout(true)
 
     const handleCheckoutComplete = () => {
         onClearCart()
@@ -43,6 +102,13 @@ export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAdd
 
     return (
         <>
+            <input
+                ref={rfidInputRef}
+                onKeyDown={handleRFIDScan}
+                className="absolute opacity-0 pointer-events-none"
+                autoFocus
+            />
+
             <div className="flex h-full w-full flex-col border-l bg-card md:w-96">
                 <div className="border-b p-4">
                     <h2 className="text-lg font-semibold">Current Order</h2>
@@ -54,7 +120,7 @@ export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAdd
                         <div className="flex h-64 flex-col items-center justify-center text-center text-muted-foreground">
                             <CreditCard className="mb-3 h-12 w-12" />
                             <p className="font-medium">No items in cart</p>
-                            <p className="text-sm">Add products to start an order</p>
+                            <p className="text-sm">Add products or tap RFID card</p>
                         </div>
                     ) : (
                         <div className="space-y-3">
@@ -74,21 +140,11 @@ export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAdd
                                     </div>
                                     <div className="mt-3 flex items-center justify-between">
                                         <div className="flex items-center gap-2">
-                                            <Button
-                                                variant="outline"
-                                                size="icon"
-                                                className="h-8 w-8 bg-transparent"
-                                                onClick={() => onUpdateQuantity(item.id, item.quantity - 1)}
-                                            >
+                                            <Button variant="outline" size="icon" className="h-8 w-8 bg-transparent" onClick={() => onUpdateQuantity(item.id, item.quantity - 1)}>
                                                 <Minus className="h-3 w-3" />
                                             </Button>
                                             <span className="w-8 text-center font-medium">{item.quantity}</span>
-                                            <Button
-                                                variant="outline"
-                                                size="icon"
-                                                className="h-8 w-8 bg-transparent"
-                                                onClick={() => onUpdateQuantity(item.id, item.quantity + 1)}
-                                            >
+                                            <Button variant="outline" size="icon" className="h-8 w-8 bg-transparent" onClick={() => onUpdateQuantity(item.id, item.quantity + 1)}>
                                                 <Plus className="h-3 w-3" />
                                             </Button>
                                         </div>
@@ -122,12 +178,7 @@ export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAdd
                             <CreditCard className="mr-2 h-5 w-5" />
                             Checkout
                         </Button>
-                        <Button
-                            variant="outline"
-                            className="w-full bg-transparent"
-                            disabled={items.length === 0}
-                            onClick={onClearCart}
-                        >
+                        <Button variant="outline" className="w-full bg-transparent" disabled={items.length === 0} onClick={onClearCart}>
                             Clear Cart
                         </Button>
                     </div>
@@ -141,6 +192,7 @@ export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAdd
                 total={total}
                 items={items}
                 onAddTransaction={onAddTransaction}
+                studentId={scannedStudentId}
             />
         </>
     )

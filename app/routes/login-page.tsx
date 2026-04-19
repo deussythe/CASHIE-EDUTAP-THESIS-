@@ -33,7 +33,7 @@ export default function LoginPage() {
         localStorage.setItem("username", email)
         localStorage.setItem("role", role)
 
-        if (role === "Staff") {
+        if (role === "Staff" || role === "staff") {
             window.location.href = "/pos"
         } else {
             // Block non-staff users from logging in
