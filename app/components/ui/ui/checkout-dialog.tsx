@@ -22,10 +22,10 @@ interface CheckoutDialogProps {
     total: number
     items: CartItem[]
     onAddTransaction: (transaction: any) => void
-    studentId?: string
+    studentNumber?: string  // ✅ renamed from studentId
 }
 
-export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddTransaction, studentId }: CheckoutDialogProps) {
+export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddTransaction, studentNumber }: CheckoutDialogProps) {
     const [paymentMethod, setPaymentMethod] = useState<"card" | "cash">("card")
     const [cashReceived, setCashReceived] = useState("")
     const [processing, setProcessing] = useState(false)
@@ -42,7 +42,6 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
     const isSufficientCash = () => getCashAmount() >= total
     const change = calculateChange()
 
-    // Auto-focus RFID input when waiting for card
     useEffect(() => {
         if (waitingForCard) {
             setTimeout(() => rfidInputRef.current?.focus(), 100)
@@ -76,8 +75,9 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
             change,
             staffName: "",
             staffId: "",
-            studentId: studentId || "",
+            studentNumber: "",  // ✅ cash = anonymous, was studentId: studentId || ""
             timestamp: Date.now(),
+            status: "Completed" as const,
         })
 
         setSuccess(true)
@@ -90,7 +90,6 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
         }, 2000)
     }
 
-    // Handle RFID scan inside the dialog
     const handleRFIDKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key !== "Enter") return
         const rfidSerial = e.currentTarget.value
@@ -101,7 +100,6 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
         setCardError("")
 
         try {
-            // 1. Look up student by rfidSerial
             const studentSnap = await getDocs(
                 query(collection(db, "students"), where("rfidSerial", "==", rfidSerial))
             )
@@ -115,8 +113,8 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
 
             const studentDoc = studentSnap.docs[0]
             const foundStudentId = studentDoc.id
+            const foundStudentNumber = studentDoc.data().studentNumber  // ✅ fetch studentNumber field
 
-            // 2. Process RFID payment (deduct balance)
             const result = await processRFIDPayment(foundStudentId, total)
 
             if (!result.success) {
@@ -126,7 +124,6 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
                 return
             }
 
-            // 3. Save transaction with real studentId
             onAddTransaction({
                 items: items.map((item) => ({
                     id: item.id,
@@ -139,13 +136,14 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
                 subtotal: parseFloat((total / 1.08).toFixed(2)),
                 tax: parseFloat((total - total / 1.08).toFixed(2)),
                 total,
-                paymentMethod: "card",
+                paymentMethod: "RFID",           // ✅ was "card"
                 amountPaid: total,
                 change: 0,
                 staffName: "",
                 staffId: "",
-                studentId: foundStudentId,
+                studentNumber: foundStudentNumber,  // ✅ was studentNumber (from prop, now from Firebase)
                 timestamp: Date.now(),
+                status: "Completed" as const,
             })
 
             setWaitingForCard(false)
@@ -167,7 +165,7 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
     }
 
     const handleClose = () => {
-        if (!processing && !success) {  // 👈 remove waitingForCard check
+        if (!processing && !success) {
             setWaitingForCard(false)
             setCashReceived("")
             setPaymentMethod("card")
@@ -183,7 +181,7 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
                 <button
                     onClick={handleClose}
                     className="absolute right-4 top-4 rounded-sm opacity-70 hover:opacity-100 disabled:pointer-events-none"
-                    disabled={processing || success}  // 👈 remove waitingForCard
+                    disabled={processing || success}
                 >
                     <X className="h-4 w-4" />
                 </button>
@@ -201,7 +199,6 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
 
                 {waitingForCard ? (
                     <div className="flex flex-col items-center justify-center py-8">
-                        {/* Hidden RFID input */}
                         <input
                             ref={rfidInputRef}
                             onKeyDown={handleRFIDKeyDown}

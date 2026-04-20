@@ -133,9 +133,18 @@ export default function POSPage() {
                 </div>
             ) : view === "history" ? (
                 <TransactionHistory
-                    transactions={transactions}
+                    transactions={transactions.filter((txn) => {
+                        const txnDate = new Date(txn.timestamp)
+                        const today = new Date()
+                        return (
+                            txnDate.getFullYear() === today.getFullYear() &&
+                            txnDate.getMonth() === today.getMonth() &&
+                            txnDate.getDate() === today.getDate()
+                        )
+                    })}
                     onClose={() => setView("pos")}
                     currentUserRole={currentUser.role}
+                    onClearTransactions={() => setTransactions([])}
                 />
             ) : view === "calendar" ? (
                 <CalendarSales

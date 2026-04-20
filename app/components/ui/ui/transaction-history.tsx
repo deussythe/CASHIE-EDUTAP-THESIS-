@@ -1,19 +1,20 @@
 "use client"
 import { useState, useEffect } from "react"
 import type { Transaction } from "../../../configs/transactionService"
+import { doc, getDoc } from "firebase/firestore"
+import { db } from "../../../configs/firebase"
 
 interface Props {
     transactions: Transaction[]
     onClose: () => void
-    currentUserRole: string   // ✅ "admin" or "staff"
+    onClearTransactions: () => void
+    currentUserRole: string
 }
 
-
-export function TransactionHistory({ transactions, onClose, currentUserRole }: Props) {
+export function TransactionHistory({ transactions, onClose, onClearTransactions, currentUserRole }: Props) {
     const [selected, setSelected] = useState<Transaction | null>(null)
     const [lastRefresh, setLastRefresh] = useState(new Date())
 
-    // Auto-refresh at midnight
     useEffect(() => {
         const calculateTimeUntilMidnight = () => {
             const now = new Date()
@@ -23,24 +24,21 @@ export function TransactionHistory({ transactions, onClose, currentUserRole }: P
             return tomorrow.getTime() - now.getTime()
         }
 
-        const timeUntilMidnight = calculateTimeUntilMidnight()
-        
-        const timer = setTimeout(() => {
-            // Reset selected transaction and refresh
-            setSelected(null)
-            setLastRefresh(new Date())
-            
-            // Reschedule for next midnight
-            const nextTimer = setTimeout(() => {
+        let timer: ReturnType<typeof setTimeout>
+
+        const scheduleMidnightRefresh = () => {
+            timer = setTimeout(() => {
                 setSelected(null)
                 setLastRefresh(new Date())
+                onClearTransactions()
+                scheduleMidnightRefresh()
             }, calculateTimeUntilMidnight())
-            
-            return () => clearTimeout(nextTimer)
-        }, timeUntilMidnight)
+        }
+
+        scheduleMidnightRefresh()
 
         return () => clearTimeout(timer)
-    }, [])
+    }, [onClearTransactions])
 
     const formatDate = (ts: number) =>
         new Date(ts).toLocaleString("en-PH", {
@@ -50,11 +48,12 @@ export function TransactionHistory({ transactions, onClose, currentUserRole }: P
 
     const formatPeso = (amount: number) => `₱${amount.toFixed(2)}`
 
-    // ✅ Export all shown transactions to CSV
     const handleExportCSV = () => {
-        const headers = ["Date", "Staff", "Payment Method", "Subtotal", "Tax", "Total", "Amount Paid", "Change"]
+        const headers = ["Transaction #", "Date", "Student No.", "Staff", "Payment Method", "Subtotal", "Tax", "Total", "Amount Paid", "Change"]
         const rows = transactions.map((txn) => [
+            txn.transactionNumber ?? "—",
             formatDate(txn.timestamp),
+            txn.studentNumber ?? "—",  // ✅ was txn.studentId
             txn.staffName,
             txn.paymentMethod.toUpperCase(),
             txn.subtotal.toFixed(2),
@@ -73,23 +72,31 @@ export function TransactionHistory({ transactions, onClose, currentUserRole }: P
         URL.revokeObjectURL(url)
     }
 
-    // ✅ Print individual receipt
-    const handlePrint = (txn: Transaction) => {
+    const handlePrint = async (txn: Transaction) => {
+        // ✅ Fetch canteen info
+        const snap = await getDoc(doc(db, "settings", "canteen_info"))
+        const schoolName = snap.exists() ? snap.data().schoolName ?? "" : ""
+        const canteenName = snap.exists() ? snap.data().canteenName ?? "" : ""
+
         const win = window.open("", "_blank", "width=400,height=600")
         if (!win) return
         win.document.write(`
-            <html><head><title>Receipt</title>
-            <style>
-                body { font-family: monospace; padding: 20px; font-size: 13px; }
-                h2 { text-align: center; }
-                .divider { border-top: 1px dashed #000; margin: 8px 0; }
-                .row { display: flex; justify-content: space-between; }
-                .bold { font-weight: bold; }
-                .center { text-align: center; }
-            </style></head><body>
+        <html><head><title>Receipt</title>
+        <style>
+            body { font-family: monospace; padding: 20px; font-size: 13px; }
+            h2 { text-align: center; }
+            .divider { border-top: 1px dashed #000; margin: 8px 0; }
+            .row { display: flex; justify-content: space-between; }
+            .bold { font-weight: bold; }
+            .center { text-align: center; }
+        </style></head><body>
+        ${schoolName ? `<p class="center" style="font-weight:bold">${schoolName}</p>` : ""}
+        ${canteenName ? `<p class="center">${canteenName}</p>` : ""}
             <h2>RECEIPT</h2>
             <p class="center">${formatDate(txn.timestamp)}</p>
+            <p class="center">Transaction #: ${txn.transactionNumber ?? "—"}</p>
             <p class="center">Staff: ${txn.staffName}</p>
+            ${txn.studentNumber ? `<p class="center">Student No: ${txn.studentNumber}</p>` : ""}
             <div class="divider"></div>
             ${txn.items.map((item) => `
                 <div class="row">
@@ -161,12 +168,18 @@ export function TransactionHistory({ transactions, onClose, currentUserRole }: P
                             >
                                 <div className="flex items-center justify-between">
                                     <div>
+                                        <p className="text-xs font-mono text-blue-600 mb-0.5">
+                                            {txn.transactionNumber ?? "—"}
+                                        </p>
                                         <p className="font-semibold">{formatDate(txn.timestamp)}</p>
                                         <p className="text-sm text-muted-foreground">
                                             {txn.items.length} item(s) ·{" "}
                                             <span className="uppercase font-medium">{txn.paymentMethod}</span>
                                         </p>
                                         <p className="text-sm text-muted-foreground">Staff: {txn.staffName}</p>
+                                        {txn.studentNumber && (
+                                            <p className="text-sm text-muted-foreground">Student No: {txn.studentNumber}</p>
+                                        )}
                                     </div>
                                     <p className="text-xl font-bold text-primary">{formatPeso(txn.total)}</p>
                                 </div>
@@ -184,10 +197,18 @@ export function TransactionHistory({ transactions, onClose, currentUserRole }: P
                             <h3 className="text-lg font-bold">Receipt</h3>
                             <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
                         </div>
+                        <p className="text-xs font-mono text-blue-600 mb-1">
+                            {selected.transactionNumber ?? "—"}
+                        </p>
                         <p className="text-sm text-gray-500">{formatDate(selected.timestamp)}</p>
-                        <p className="mb-4 text-sm text-gray-500">
+                        <p className="text-sm text-gray-500">
                             Staff: <span className="font-medium text-gray-700">{selected.staffName}</span>
                         </p>
+                        {selected.studentNumber && (
+                            <p className="mb-4 text-sm text-gray-500">
+                                Student No: <span className="font-medium text-gray-700">{selected.studentNumber}</span>
+                            </p>
+                        )}
                         <div className="mb-3 space-y-2 border-t border-b py-3">
                             {selected.items.map((item, i) => (
                                 <div key={i} className="flex justify-between text-sm">
@@ -204,7 +225,6 @@ export function TransactionHistory({ transactions, onClose, currentUserRole }: P
                             <div className="flex justify-between text-gray-500"><span>Change</span><span>{formatPeso(selected.change)}</span></div>
                             <div className="flex justify-between text-gray-500"><span>Payment Method</span><span className="uppercase font-medium">{selected.paymentMethod}</span></div>
                         </div>
-                        {/* ✅ Print button */}
                         <button
                             onClick={() => handlePrint(selected)}
                             className="mt-5 w-full rounded-lg bg-primary py-2 text-sm font-semibold text-white hover:opacity-90 transition"

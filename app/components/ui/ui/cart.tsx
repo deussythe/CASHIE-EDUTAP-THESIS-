@@ -47,7 +47,6 @@ export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAdd
         if (e.key === "Enter" && items.length > 0) {
             const rfidSerial = e.currentTarget.value
 
-            // Look up student by rfidSerial
             const studentQuery = query(
                 collection(db, "students"),
                 where("rfidSerial", "==", rfidSerial)
@@ -61,10 +60,9 @@ export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAdd
             }
 
             const studentDoc = studentSnap.docs[0]
-            const studentId = studentDoc.id  // real Firestore document ID
-            setScannedStudentId(studentId)
+            const studentId = studentDoc.id
+            const studentNumber = studentDoc.data().studentNumber  // ✅ get studentNumber field
 
-            // Process payment using studentId
             const result = await processRFIDPayment(studentId, total)
 
             if (result.success) {
@@ -77,8 +75,9 @@ export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAdd
                     change: 0,
                     staffName: "Canteen Staff",
                     staffId: "Staff_001",
-                    studentId: studentId,
+                    studentNumber,               // ✅ renamed
                     paymentMethod: "RFID",
+                    status: "Completed" as const,
                     timestamp: Date.now()
                 }
 
@@ -192,7 +191,7 @@ export function Cart({ items, onRemoveItem, onUpdateQuantity, onClearCart, onAdd
                 total={total}
                 items={items}
                 onAddTransaction={onAddTransaction}
-                studentId={scannedStudentId}
+                studentNumber={scannedStudentId}
             />
         </>
     )

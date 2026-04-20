@@ -2,14 +2,15 @@ import { db } from "./firebase"
 import {
     collection, addDoc, onSnapshot,
     query, orderBy, where, doc, getDoc,
-    updateDoc, increment, getDocs  
+    updateDoc, increment, getDocs
 } from "firebase/firestore"
 
 export interface Transaction {
     id?: string
+    transactionNumber?: string
+    studentNumber?: string  // ✅ renamed from studentId
     items: {
         id: string
-        studentId?: string
         name: string
         price: number
         quantity: number
@@ -25,9 +26,9 @@ export interface Transaction {
     staffId: string
     paymentMethod: string
     timestamp: number
+    status: "Completed" | "Pending" | "Canceled"
 }
 
-// ✅ NEW: Logic to check student balance and deduct money
 
 export const processRFIDPayment = async (studentId: string, total: number) => {
     try {
@@ -45,7 +46,6 @@ export const processRFIDPayment = async (studentId: string, total: number) => {
             return { success: false, message: "Insufficient balance for this transaction." }
         }
 
-        // ✅ Daily spending limit check
         const dailyLimit = studentData.dailyLimit ?? null
 
         if (dailyLimit !== null) {
@@ -71,7 +71,6 @@ export const processRFIDPayment = async (studentId: string, total: number) => {
             }
         }
 
-        // Deduct the amount
         await updateDoc(studentRef, {
             balance: increment(-total)
         })
@@ -84,7 +83,6 @@ export const processRFIDPayment = async (studentId: string, total: number) => {
     }
 }
 
-// All transactions (admin view) [cite: 2]
 export const subscribeToTransactions = (callback: (transactions: Transaction[]) => void) => {
     const q = query(collection(db, "transactions"), orderBy("timestamp", "desc"))
     return onSnapshot(q, (snapshot) => {
@@ -96,7 +94,6 @@ export const subscribeToTransactions = (callback: (transactions: Transaction[]) 
     })
 }
 
-// Staff-filtered transactions [cite: 3, 4]
 export const subscribeToStaffTransactions = (staffId: string, callback: (transactions: Transaction[]) => void) => {
     const q = query(
         collection(db, "transactions"),
@@ -112,21 +109,27 @@ export const subscribeToStaffTransactions = (staffId: string, callback: (transac
     })
 }
 
-// Save transaction to history [cite: 5]
+// ✅ saveTransaction now auto-generates transactionNumber
 export const saveTransaction = async (transaction: Omit<Transaction, "id">) => {
+    const snapshot = await getDocs(collection(db, "transactions"))
+    const count = snapshot.size + 1
+    const transactionNumber = `TXN-${String(count).padStart(5, "0")}`
+
     await addDoc(collection(db, "transactions"), {
         ...transaction,
+        transactionNumber,
         timestamp: Date.now(),
+        status: "Completed",
     })
 }
-// Fetch transactions for a specific student (Parent View)
+
 export const subscribeToStudentTransactions = (
-    studentId: string,
+    studentNumber: string,
     callback: (transactions: Transaction[]) => void
 ) => {
     const q = query(
         collection(db, "transactions"),
-        where("studentId", "==", studentId), // Filters only their child's spendings
+        where("studentNumber", "==", studentNumber),  // ✅ renamed
         orderBy("timestamp", "desc")
     )
     return onSnapshot(q, (snapshot) => {
