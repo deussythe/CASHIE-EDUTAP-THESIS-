@@ -167,7 +167,8 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
     }
 
     const handleClose = () => {
-        if (!processing && !success && !waitingForCard) {
+        if (!processing && !success) {  // 👈 remove waitingForCard check
+            setWaitingForCard(false)
             setCashReceived("")
             setPaymentMethod("card")
             onClose()
@@ -182,7 +183,7 @@ export function CheckoutDialog({ open, onClose, onComplete, total, items, onAddT
                 <button
                     onClick={handleClose}
                     className="absolute right-4 top-4 rounded-sm opacity-70 hover:opacity-100 disabled:pointer-events-none"
-                    disabled={processing || success || waitingForCard}
+                    disabled={processing || success}  // 👈 remove waitingForCard
                 >
                     <X className="h-4 w-4" />
                 </button>
