@@ -2,13 +2,13 @@ import { db } from "./firebase"
 import {
     collection, addDoc, onSnapshot,
     query, orderBy, where, doc, getDoc,
-    updateDoc, increment, getDocs
+    updateDoc, increment, getDocs, runTransaction
 } from "firebase/firestore"
 
 export interface Transaction {
     id?: string
     transactionNumber?: string
-    studentNumber?: string  // ✅ renamed from studentId
+    studentNumber?: string
     items: {
         id: string
         name: string
@@ -56,7 +56,7 @@ export const processRFIDPayment = async (studentId: string, total: number) => {
             const txnSnap = await getDocs(
                 query(
                     collection(db, "transactions"),
-                    where("studentId", "==", studentId),
+                    where("studentNumber", "==", studentData.studentNumber),
                     where("timestamp", ">=", startTimestamp)
                 )
             )
@@ -64,6 +64,19 @@ export const processRFIDPayment = async (studentId: string, total: number) => {
             const todaySpent = txnSnap.docs.reduce((sum, d) => sum + (d.data().total || 0), 0)
 
             if (todaySpent + total > dailyLimit) {
+                await addDoc(collection(db, "notifications"), {
+                    guardianId: studentData.guardianId,
+                    studentName: studentData.name,
+                    studentNumber: studentData.studentNumber,
+                    type: "limit_exceeded",
+                    message: `${studentData.name} tried to purchase ₱${total.toFixed(2)} but has reached the daily limit of ₱${dailyLimit}. Spent today: ₱${todaySpent.toFixed(2)}`,
+                    attemptedAmount: total,
+                    dailyLimit,
+                    todaySpent,
+                    read: false,
+                    timestamp: Date.now(),
+                })
+
                 return {
                     success: false,
                     message: `Daily spending limit of ₱${dailyLimit} reached. Spent today: ₱${todaySpent.toFixed(2)}`
@@ -75,7 +88,8 @@ export const processRFIDPayment = async (studentId: string, total: number) => {
             balance: increment(-total)
         })
 
-        return { success: true, newBalance: currentBalance - total }
+        const newBalance = currentBalance - total
+        return { success: true, newBalance }
 
     } catch (error) {
         console.error("RFID Payment Error:", error)
@@ -109,11 +123,17 @@ export const subscribeToStaffTransactions = (staffId: string, callback: (transac
     })
 }
 
-// ✅ saveTransaction now auto-generates transactionNumber
+// ✅ Uses atomic Firestore transaction to avoid race condition + returns transactionNumber
 export const saveTransaction = async (transaction: Omit<Transaction, "id">) => {
-    const snapshot = await getDocs(collection(db, "transactions"))
-    const count = snapshot.size + 1
-    const transactionNumber = `TXN-${String(count).padStart(5, "0")}`
+    const counterRef = doc(db, "counters", "transactions")
+
+    const transactionNumber = await runTransaction(db, async (t) => {
+        const counterSnap = await t.get(counterRef)
+        const currentCount = counterSnap.exists() ? (counterSnap.data().count ?? 0) : 0
+        const newCount = currentCount + 1
+        t.set(counterRef, { count: newCount })
+        return `TXN-${String(newCount).padStart(5, "0")}`
+    })
 
     await addDoc(collection(db, "transactions"), {
         ...transaction,
@@ -121,6 +141,8 @@ export const saveTransaction = async (transaction: Omit<Transaction, "id">) => {
         timestamp: Date.now(),
         status: "Completed",
     })
+
+    return transactionNumber // ✅ return so UI can display it
 }
 
 export const subscribeToStudentTransactions = (
@@ -129,7 +151,7 @@ export const subscribeToStudentTransactions = (
 ) => {
     const q = query(
         collection(db, "transactions"),
-        where("studentNumber", "==", studentNumber),  // ✅ renamed
+        where("studentNumber", "==", studentNumber),
         orderBy("timestamp", "desc")
     )
     return onSnapshot(q, (snapshot) => {
